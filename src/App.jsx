@@ -1,464 +1,255 @@
 import { useState, useRef, useCallback } from "react";
 
-// ── Replace this with your HuggingFace Space URL ──────────────────────────
-// e.g. "https://YOUR-USERNAME-tiktok-voiceover-api.hf.space"
 const API_BASE = import.meta.env.VITE_API_URL || "https://YOUR-HF-SPACE.hf.space";
 
 const STEPS = {
-  queued: { label: "Queued", pct: 5 },
-  extracting_audio: { label: "Extracting audio…", pct: 20 },
-  transcribing: { label: "Transcribing speech…", pct: 40 },
-  translating: { label: "Translating to English…", pct: 60 },
-  generating_voiceover: { label: "Generating UK voiceover…", pct: 80 },
-  merging_video: { label: "Merging video…", pct: 90 },
-  done: { label: "Done!", pct: 100 },
-  error: { label: "Error", pct: 0 },
+  queued:               { label: "Queued",                    pct: 5  },
+  extracting_audio:     { label: "Extracting audio…",         pct: 20 },
+  transcribing:         { label: "Transcribing speech…",      pct: 40 },
+  translating:          { label: "Translating to English…",   pct: 60 },
+  generating_voiceover: { label: "Generating voiceover…",     pct: 80 },
+  merging_video:        { label: "Merging output…",           pct: 90 },
+  done:                 { label: "Done!",                     pct: 100 },
+  error:                { label: "Error",                     pct: 0  },
 };
 
-const UK_SPEAKERS = [
-  { value: "p225", label: "Speaker 1 (Female, British)" },
-  { value: "p226", label: "Speaker 2 (Male, British)" },
-  { value: "p228", label: "Speaker 3 (Female, British)" },
-  { value: "p229", label: "Speaker 4 (Female, British)" },
-  { value: "p232", label: "Speaker 5 (Male, British)" },
-];
+const LANGUAGES = {
+  b: { name: "British English 🇬🇧", voices: { bf_emma: "Emma (Female)", bf_isabella: "Isabella (Female)", bm_george: "George (Male)", bm_lewis: "Lewis (Male)" }, default: "bf_emma" },
+  a: { name: "American English 🇺🇸", voices: { af_heart: "Heart (Female)", af_sarah: "Sarah (Female)", am_adam: "Adam (Male)", am_michael: "Michael (Male)" }, default: "af_heart" },
+  j: { name: "Japanese 🇯🇵",         voices: { jf_alpha: "Alpha (Female)", jm_kumo: "Kumo (Male)" }, default: "jf_alpha" },
+  z: { name: "Mandarin 🇨🇳",         voices: { zf_xiaobei: "Xiaobei (Female)", zm_yunxi: "Yunxi (Male)" }, default: "zf_xiaobei" },
+  e: { name: "Spanish 🇪🇸",          voices: { ef_dora: "Dora (Female)", em_alex: "Alex (Male)" }, default: "ef_dora" },
+  f: { name: "French 🇫🇷",           voices: { ff_siwis: "Siwis (Female)" }, default: "ff_siwis" },
+  h: { name: "Hindi 🇮🇳",            voices: { hf_alpha: "Alpha (Female)", hm_omega: "Omega (Male)" }, default: "hf_alpha" },
+  i: { name: "Italian 🇮🇹",          voices: { if_sara: "Sara (Female)", im_nicola: "Nicola (Male)" }, default: "if_sara" },
+  p: { name: "Portuguese 🇧🇷",       voices: { pf_dora: "Dora (Female)", pm_alex: "Alex (Male)" }, default: "pf_dora" },
+};
+
+const ACCEPT = ".mp4,.mov,.avi,.mkv,.webm,.m4v,.3gp,.flv,.mp3,.wav,.m4a,.aac,.ogg,.flac";
 
 export default function App() {
-  const [file, setFile] = useState(null);
-  const [dragOver, setDragOver] = useState(false);
-  const [speaker, setSpeaker] = useState("p225");
-  const [jobId, setJobId] = useState(null);
-  const [jobStatus, setJobStatus] = useState(null);
-  const [transcript, setTranscript] = useState(null);
-  const [error, setError] = useState(null);
+  const [file, setFile]           = useState(null);
+  const [dragOver, setDragOver]   = useState(false);
+  const [langCode, setLangCode]   = useState("b");
+  const [voice, setVoice]         = useState("bf_emma");
+  const [jobId, setJobId]         = useState(null);
+  const [jobData, setJobData]     = useState(null);
+  const [error, setError]         = useState(null);
   const [uploading, setUploading] = useState(false);
-  const [downloadUrl, setDownloadUrl] = useState(null);
-  const pollRef = useRef(null);
-  const fileInputRef = useRef(null);
+  const pollRef    = useRef(null);
+  const fileInput  = useRef(null);
 
   const reset = () => {
     if (pollRef.current) clearInterval(pollRef.current);
-    setFile(null);
-    setJobId(null);
-    setJobStatus(null);
-    setTranscript(null);
-    setError(null);
-    setUploading(false);
-    setDownloadUrl(null);
+    setFile(null); setJobId(null); setJobData(null);
+    setError(null); setUploading(false);
+  };
+
+  const handleLangChange = (code) => {
+    setLangCode(code);
+    setVoice(LANGUAGES[code].default);
   };
 
   const handleFile = (f) => {
     if (!f) return;
-    const allowed = ["video/mp4", "video/quicktime", "video/x-msvideo", "video/webm", "video/x-matroska"];
-    if (!allowed.includes(f.type) && !f.name.match(/\.(mp4|mov|avi|mkv|webm)$/i)) {
-      setError("Please upload a video file (MP4, MOV, AVI, MKV, WebM)");
-      return;
-    }
-    if (f.size > 50 * 1024 * 1024) {
-      setError("File too large. Maximum 50MB.");
-      return;
-    }
+    if (f.size > 100 * 1024 * 1024) { setError("Max 100MB"); return; }
     setError(null);
     setFile(f);
   };
 
   const onDrop = useCallback((e) => {
-    e.preventDefault();
-    setDragOver(false);
-    const f = e.dataTransfer.files[0];
-    handleFile(f);
+    e.preventDefault(); setDragOver(false);
+    handleFile(e.dataTransfer.files[0]);
   }, []);
 
   const startPolling = (id) => {
     pollRef.current = setInterval(async () => {
       try {
-        const res = await fetch(`${API_BASE}/status/${id}`);
+        const res  = await fetch(`${API_BASE}/status/${id}`);
         const data = await res.json();
-        setJobStatus(data.status);
-
-        if (data.english_text) setTranscript(data.english_text);
-
-        if (data.status === "done") {
+        setJobData(data);
+        if (data.status === "done" || data.status === "error") {
           clearInterval(pollRef.current);
-          setDownloadUrl(`${API_BASE}/download/${id}`);
-        } else if (data.status === "error") {
-          clearInterval(pollRef.current);
-          setError(data.error || "Processing failed");
+          if (data.status === "error") setError(data.error || "Processing failed");
         }
-      } catch (e) {
-        console.error("Poll error:", e);
-      }
+      } catch (e) { console.error(e); }
     }, 3000);
   };
 
   const handleSubmit = async () => {
     if (!file) return;
-    setUploading(true);
-    setError(null);
-    setJobStatus("uploading");
-
+    setUploading(true); setError(null);
     const form = new FormData();
     form.append("file", file);
-    form.append("speaker", speaker);
-
     try {
-      const res = await fetch(`${API_BASE}/upload?speaker=${encodeURIComponent(speaker)}`, {
-        method: "POST",
-        body: form,
+      const res = await fetch(`${API_BASE}/upload?voice=${voice}&lang_code=${langCode}`, {
+        method: "POST", body: form,
       });
-
-      if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.detail || "Upload failed");
-      }
-
+      if (!res.ok) { const e = await res.json(); throw new Error(e.detail || "Upload failed"); }
       const data = await res.json();
       setJobId(data.job_id);
-      setJobStatus("queued");
+      setJobData({ status: "queued" });
       setUploading(false);
       startPolling(data.job_id);
-    } catch (e) {
-      setError(e.message);
-      setUploading(false);
-      setJobStatus(null);
-    }
+    } catch (e) { setError(e.message); setUploading(false); }
   };
 
-  const step = STEPS[jobStatus] || null;
-  const isProcessing = jobStatus && jobStatus !== "done" && jobStatus !== "error";
+  const step        = STEPS[jobData?.status] || null;
+  const isDone      = jobData?.status === "done";
+  const isError     = jobData?.status === "error";
+  const processing  = jobId && !isDone && !isError;
+  const downloadUrl = isDone ? `${API_BASE}/download/${jobId}` : null;
+  const isAudio     = file && [".mp3",".wav",".m4a",".aac",".ogg",".flac",".wma"].some(e => file.name.toLowerCase().endsWith(e));
+
+  const S = {
+    page:    { minHeight:"100vh", background:"linear-gradient(135deg,#0f0c29,#302b63,#24243e)", fontFamily:"'Inter',-apple-system,sans-serif", color:"#fff" },
+    header:  { background:"rgba(255,255,255,0.05)", backdropFilter:"blur(10px)", borderBottom:"1px solid rgba(255,255,255,0.1)", padding:"16px 24px", display:"flex", alignItems:"center", gap:"12px" },
+    main:    { maxWidth:"700px", margin:"0 auto", padding:"40px 24px" },
+    card:    { background:"rgba(255,255,255,0.07)", borderRadius:"20px", padding:"32px", border:"1px solid rgba(255,255,255,0.1)", marginBottom:"20px" },
+    btn:     (active) => ({ width:"100%", padding:"14px", background: active ? "linear-gradient(135deg,#7c3aed,#4f46e5)" : "rgba(255,255,255,0.1)", border:"none", borderRadius:"10px", color:"#fff", fontSize:"16px", fontWeight:600, cursor: active ? "pointer" : "not-allowed", transition:"all 0.2s" }),
+    select:  { width:"100%", padding:"10px 14px", background:"rgba(255,255,255,0.1)", border:"1px solid rgba(255,255,255,0.2)", borderRadius:"8px", color:"#fff", fontSize:"14px", outline:"none", cursor:"pointer" },
+    label:   { fontSize:"13px", color:"rgba(255,255,255,0.7)", display:"block", marginBottom:"8px" },
+    drop:    (over) => ({ border:`2px dashed ${over?"#a78bfa":"rgba(255,255,255,0.2)"}`, borderRadius:"12px", padding:"40px 24px", textAlign:"center", cursor:"pointer", background: over?"rgba(167,139,250,0.1)":"rgba(255,255,255,0.03)", transition:"all 0.2s", marginBottom:"20px" }),
+    error:   { background:"rgba(239,68,68,0.15)", border:"1px solid rgba(239,68,68,0.4)", borderRadius:"8px", padding:"12px 16px", fontSize:"14px", color:"#fca5a5", marginBottom:"16px" },
+    bar:     { background:"rgba(255,255,255,0.1)", borderRadius:"999px", height:"8px", marginBottom:"12px", overflow:"hidden" },
+    fill:    (pct) => ({ height:"100%", width:`${pct}%`, background:"linear-gradient(90deg,#7c3aed,#818cf8)", borderRadius:"999px", transition:"width 0.6s ease" }),
+    transcript: { background:"rgba(255,255,255,0.05)", borderRadius:"10px", padding:"16px", marginBottom:"24px", textAlign:"left" },
+    grid3:   { display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:"16px", marginTop:"20px" },
+    infoCard:{ background:"rgba(255,255,255,0.05)", borderRadius:"12px", padding:"20px", border:"1px solid rgba(255,255,255,0.08)", textAlign:"center" },
+  };
 
   return (
-    <div style={{
-      minHeight: "100vh",
-      background: "linear-gradient(135deg, #0f0c29, #302b63, #24243e)",
-      fontFamily: "'Inter', -apple-system, sans-serif",
-      color: "#fff",
-      padding: "0",
-    }}>
-      {/* Header */}
-      <header style={{
-        background: "rgba(255,255,255,0.05)",
-        backdropFilter: "blur(10px)",
-        borderBottom: "1px solid rgba(255,255,255,0.1)",
-        padding: "16px 24px",
-        display: "flex",
-        alignItems: "center",
-        gap: "12px",
-      }}>
-        <span style={{ fontSize: "28px" }}>🎙️</span>
+    <div style={S.page}>
+      <header style={S.header}>
+        <span style={{fontSize:"28px"}}>🎙️</span>
         <div>
-          <h1 style={{ margin: 0, fontSize: "20px", fontWeight: 700 }}>TikTok Voiceover</h1>
-          <p style={{ margin: 0, fontSize: "12px", color: "rgba(255,255,255,0.5)" }}>
-            Any language → UK English voiceover
-          </p>
+          <h1 style={{margin:0,fontSize:"20px",fontWeight:700}}>TikTok Voiceover</h1>
+          <p style={{margin:0,fontSize:"12px",color:"rgba(255,255,255,0.5)"}}>Any language video/audio → voiceover in 9 languages</p>
         </div>
       </header>
 
-      <main style={{ maxWidth: "680px", margin: "0 auto", padding: "40px 24px" }}>
+      <main style={S.main}>
 
-        {/* Upload Card */}
+        {/* ── Upload form ── */}
         {!jobId && (
-          <div style={{
-            background: "rgba(255,255,255,0.07)",
-            borderRadius: "20px",
-            padding: "32px",
-            border: "1px solid rgba(255,255,255,0.1)",
-          }}>
-            <h2 style={{ margin: "0 0 24px", fontSize: "18px", fontWeight: 600 }}>
-              Upload your TikTok video
-            </h2>
-
-            {/* Drop Zone */}
-            <div
+          <div style={S.card}>
+            {/* Drop zone */}
+            <div style={S.drop(dragOver)}
               onDrop={onDrop}
-              onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
-              onDragLeave={() => setDragOver(false)}
-              onClick={() => fileInputRef.current?.click()}
-              style={{
-                border: `2px dashed ${dragOver ? "#a78bfa" : "rgba(255,255,255,0.2)"}`,
-                borderRadius: "12px",
-                padding: "48px 24px",
-                textAlign: "center",
-                cursor: "pointer",
-                background: dragOver ? "rgba(167,139,250,0.1)" : "rgba(255,255,255,0.03)",
-                transition: "all 0.2s",
-                marginBottom: "24px",
-              }}
-            >
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept="video/*"
-                style={{ display: "none" }}
-                onChange={(e) => handleFile(e.target.files[0])}
-              />
+              onDragOver={(e)=>{e.preventDefault();setDragOver(true);}}
+              onDragLeave={()=>setDragOver(false)}
+              onClick={()=>fileInput.current?.click()}>
+              <input ref={fileInput} type="file" accept={ACCEPT} style={{display:"none"}} onChange={e=>handleFile(e.target.files[0])} />
               {file ? (
                 <div>
-                  <div style={{ fontSize: "40px", marginBottom: "8px" }}>🎬</div>
-                  <p style={{ margin: "0 0 4px", fontWeight: 600 }}>{file.name}</p>
-                  <p style={{ margin: 0, fontSize: "13px", color: "rgba(255,255,255,0.5)" }}>
-                    {(file.size / 1024 / 1024).toFixed(1)} MB
-                  </p>
+                  <div style={{fontSize:"40px",marginBottom:"8px"}}>{isAudio ? "🎵" : "🎬"}</div>
+                  <p style={{margin:"0 0 4px",fontWeight:600}}>{file.name}</p>
+                  <p style={{margin:0,fontSize:"13px",color:"rgba(255,255,255,0.5)"}}>{(file.size/1024/1024).toFixed(1)} MB · {isAudio ? "Audio file" : "Video file"}</p>
                 </div>
               ) : (
                 <div>
-                  <div style={{ fontSize: "40px", marginBottom: "12px" }}>📱</div>
-                  <p style={{ margin: "0 0 8px", fontWeight: 600 }}>Drop your video here</p>
-                  <p style={{ margin: 0, fontSize: "13px", color: "rgba(255,255,255,0.5)" }}>
-                    MP4, MOV, AVI, MKV, WebM · Max 50MB
-                  </p>
+                  <div style={{fontSize:"40px",marginBottom:"12px"}}>📁</div>
+                  <p style={{margin:"0 0 8px",fontWeight:600}}>Drop video or audio file here</p>
+                  <p style={{margin:0,fontSize:"12px",color:"rgba(255,255,255,0.45)"}}>Video: MP4 MOV AVI MKV WebM · Audio: MP3 WAV M4A AAC OGG FLAC · Max 100MB</p>
                 </div>
               )}
             </div>
 
-            {/* Voice selector */}
-            <div style={{ marginBottom: "24px" }}>
-              <label style={{ fontSize: "13px", color: "rgba(255,255,255,0.7)", display: "block", marginBottom: "8px" }}>
-                🇬🇧 UK English Speaker
-              </label>
-              <select
-                value={speaker}
-                onChange={(e) => setSpeaker(e.target.value)}
-                style={{
-                  width: "100%",
-                  padding: "10px 14px",
-                  background: "rgba(255,255,255,0.1)",
-                  border: "1px solid rgba(255,255,255,0.2)",
-                  borderRadius: "8px",
-                  color: "#fff",
-                  fontSize: "14px",
-                  outline: "none",
-                  cursor: "pointer",
-                }}
-              >
-                {UK_SPEAKERS.map((v) => (
-                  <option key={v.value} value={v.value} style={{ background: "#302b63" }}>
-                    {v.label}
-                  </option>
+            {/* Output language */}
+            <div style={{marginBottom:"16px"}}>
+              <label style={S.label}>🌍 Output Language</label>
+              <select value={langCode} onChange={e=>handleLangChange(e.target.value)} style={S.select}>
+                {Object.entries(LANGUAGES).map(([code,lang])=>(
+                  <option key={code} value={code} style={{background:"#302b63"}}>{lang.name}</option>
                 ))}
               </select>
             </div>
 
-            {error && (
-              <div style={{
-                background: "rgba(239,68,68,0.15)",
-                border: "1px solid rgba(239,68,68,0.4)",
-                borderRadius: "8px",
-                padding: "12px 16px",
-                fontSize: "14px",
-                color: "#fca5a5",
-                marginBottom: "20px",
-              }}>
-                ⚠️ {error}
-              </div>
-            )}
-
-            <button
-              onClick={handleSubmit}
-              disabled={!file || uploading}
-              style={{
-                width: "100%",
-                padding: "14px",
-                background: file && !uploading
-                  ? "linear-gradient(135deg, #7c3aed, #4f46e5)"
-                  : "rgba(255,255,255,0.1)",
-                border: "none",
-                borderRadius: "10px",
-                color: "#fff",
-                fontSize: "16px",
-                fontWeight: 600,
-                cursor: file && !uploading ? "pointer" : "not-allowed",
-                transition: "all 0.2s",
-              }}
-            >
-              {uploading ? "Uploading…" : "🚀 Convert to UK English"}
-            </button>
-
-            <p style={{ margin: "16px 0 0", fontSize: "12px", color: "rgba(255,255,255,0.35)", textAlign: "center" }}>
-              Supports 16+ languages · Powered by Whisper + Helsinki-NLP + edge-tts
-            </p>
-          </div>
-        )}
-
-        {/* Progress Card */}
-        {jobId && !downloadUrl && (
-          <div style={{
-            background: "rgba(255,255,255,0.07)",
-            borderRadius: "20px",
-            padding: "32px",
-            border: "1px solid rgba(255,255,255,0.1)",
-          }}>
-            <h2 style={{ margin: "0 0 8px", fontSize: "18px", fontWeight: 600 }}>
-              Processing your video
-            </h2>
-            <p style={{ margin: "0 0 32px", fontSize: "13px", color: "rgba(255,255,255,0.5)" }}>
-              Job ID: {jobId}
-            </p>
-
-            {/* Progress bar */}
-            <div style={{
-              background: "rgba(255,255,255,0.1)",
-              borderRadius: "999px",
-              height: "8px",
-              marginBottom: "12px",
-              overflow: "hidden",
-            }}>
-              <div style={{
-                height: "100%",
-                width: `${step?.pct || 5}%`,
-                background: "linear-gradient(90deg, #7c3aed, #818cf8)",
-                borderRadius: "999px",
-                transition: "width 0.6s ease",
-              }} />
-            </div>
-            <p style={{ margin: "0 0 32px", fontSize: "14px", color: "rgba(255,255,255,0.7)" }}>
-              {step?.label || "Processing…"}
-            </p>
-
-            {/* Steps list */}
-            <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-              {Object.entries(STEPS).filter(([k]) => k !== "error").map(([key, val]) => {
-                const pct = step?.pct || 0;
-                const isDone = pct >= val.pct && key !== "done";
-                const isCurrent = jobStatus === key;
-                return (
-                  <div key={key} style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: "12px",
-                    opacity: pct >= val.pct ? 1 : 0.35,
-                  }}>
-                    <div style={{
-                      width: "20px", height: "20px",
-                      borderRadius: "50%",
-                      background: isDone || isCurrent ? "linear-gradient(135deg, #7c3aed, #4f46e5)" : "rgba(255,255,255,0.15)",
-                      display: "flex", alignItems: "center", justifyContent: "center",
-                      fontSize: "11px", flexShrink: 0,
-                    }}>
-                      {isDone ? "✓" : ""}
-                    </div>
-                    <span style={{ fontSize: "14px" }}>{val.label}</span>
-                  </div>
-                );
-              })}
+            {/* Voice */}
+            <div style={{marginBottom:"20px"}}>
+              <label style={S.label}>🗣️ Voice</label>
+              <select value={voice} onChange={e=>setVoice(e.target.value)} style={S.select}>
+                {Object.entries(LANGUAGES[langCode].voices).map(([v,label])=>(
+                  <option key={v} value={v} style={{background:"#302b63"}}>{label}</option>
+                ))}
+              </select>
             </div>
 
-            {error && (
-              <div style={{
-                marginTop: "24px",
-                background: "rgba(239,68,68,0.15)",
-                border: "1px solid rgba(239,68,68,0.4)",
-                borderRadius: "8px",
-                padding: "12px 16px",
-                fontSize: "14px",
-                color: "#fca5a5",
-              }}>
-                ❌ Error: {error}
-                <button onClick={reset} style={{
-                  marginLeft: "12px", background: "none", border: "none",
-                  color: "#fca5a5", cursor: "pointer", textDecoration: "underline",
-                }}>Try again</button>
-              </div>
-            )}
-          </div>
-        )}
+            {error && <div style={S.error}>⚠️ {error}</div>}
 
-        {/* Done Card */}
-        {downloadUrl && (
-          <div style={{
-            background: "rgba(255,255,255,0.07)",
-            borderRadius: "20px",
-            padding: "32px",
-            border: "1px solid rgba(255,255,255,0.1)",
-            textAlign: "center",
-          }}>
-            <div style={{ fontSize: "56px", marginBottom: "16px" }}>🎉</div>
-            <h2 style={{ margin: "0 0 8px", fontSize: "22px", fontWeight: 700 }}>
-              Your video is ready!
-            </h2>
-            <p style={{ margin: "0 0 32px", color: "rgba(255,255,255,0.5)", fontSize: "14px" }}>
-              UK English voiceover has been added successfully
+            <button onClick={handleSubmit} disabled={!file||uploading} style={S.btn(file&&!uploading)}>
+              {uploading ? "Uploading…" : "🚀 Generate Voiceover"}
+            </button>
+
+            <p style={{margin:"16px 0 0",fontSize:"12px",color:"rgba(255,255,255,0.3)",textAlign:"center"}}>
+              Powered by Whisper (transcribe) + Kokoro (voice) · No computer vision · Audio only processing
             </p>
 
-            {transcript && (
-              <div style={{
-                background: "rgba(255,255,255,0.05)",
-                borderRadius: "10px",
-                padding: "16px",
-                marginBottom: "24px",
-                textAlign: "left",
-              }}>
-                <p style={{ margin: "0 0 8px", fontSize: "12px", color: "rgba(255,255,255,0.4)", textTransform: "uppercase", letterSpacing: "0.05em" }}>
-                  English transcript
-                </p>
-                <p style={{ margin: 0, fontSize: "14px", lineHeight: 1.6, color: "rgba(255,255,255,0.8)" }}>
-                  {transcript}
-                </p>
-              </div>
-            )}
-
-            <a
-              href={downloadUrl}
-              download
-              style={{
-                display: "inline-block",
-                padding: "14px 32px",
-                background: "linear-gradient(135deg, #7c3aed, #4f46e5)",
-                borderRadius: "10px",
-                color: "#fff",
-                textDecoration: "none",
-                fontSize: "16px",
-                fontWeight: 600,
-                marginBottom: "16px",
-              }}
-            >
-              ⬇️ Download Video
-            </a>
-
-            <br />
-            <button
-              onClick={reset}
-              style={{
-                background: "none",
-                border: "none",
-                color: "rgba(255,255,255,0.4)",
-                cursor: "pointer",
-                fontSize: "14px",
-                textDecoration: "underline",
-              }}
-            >
-              Convert another video
-            </button>
+            {/* Info cards */}
+            <div style={S.grid3}>
+              {[
+                {icon:"🌐", title:"99+ Input Langs",  desc:"Whisper detects and translates any language automatically"},
+                {icon:"🗣️", title:"9 Output Langs",   desc:"British English, American, Japanese, Mandarin, Spanish & more"},
+                {icon:"⚡", title:"Video & Audio",    desc:"MP4, MOV, AVI, MKV, MP3, WAV, M4A and more"},
+              ].map(c=>(
+                <div key={c.title} style={S.infoCard}>
+                  <div style={{fontSize:"26px",marginBottom:"8px"}}>{c.icon}</div>
+                  <p style={{margin:"0 0 4px",fontWeight:600,fontSize:"13px"}}>{c.title}</p>
+                  <p style={{margin:0,fontSize:"11px",color:"rgba(255,255,255,0.4)",lineHeight:1.5}}>{c.desc}</p>
+                </div>
+              ))}
+            </div>
           </div>
         )}
 
-        {/* Info cards */}
-        {!jobId && (
-          <div style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(3, 1fr)",
-            gap: "16px",
-            marginTop: "24px",
-          }}>
-            {[
-              { icon: "🌍", title: "16+ Languages", desc: "Chinese, Spanish, French, Japanese, Korean & more" },
-              { icon: "🇬🇧", title: "UK English", desc: "Natural neural voices via Microsoft edge-tts" },
-              { icon: "⚡", title: "Auto-detect", desc: "No need to specify the source language" },
-            ].map((card) => (
-              <div key={card.title} style={{
-                background: "rgba(255,255,255,0.05)",
-                borderRadius: "12px",
-                padding: "20px",
-                border: "1px solid rgba(255,255,255,0.08)",
-                textAlign: "center",
-              }}>
-                <div style={{ fontSize: "28px", marginBottom: "8px" }}>{card.icon}</div>
-                <p style={{ margin: "0 0 6px", fontWeight: 600, fontSize: "14px" }}>{card.title}</p>
-                <p style={{ margin: 0, fontSize: "12px", color: "rgba(255,255,255,0.45)", lineHeight: 1.5 }}>{card.desc}</p>
+        {/* ── Progress ── */}
+        {jobId && !isDone && (
+          <div style={S.card}>
+            <h2 style={{margin:"0 0 6px",fontSize:"18px"}}>Processing your file</h2>
+            <p style={{margin:"0 0 28px",fontSize:"13px",color:"rgba(255,255,255,0.4)"}}>Job: {jobId}</p>
+            <div style={S.bar}><div style={S.fill(step?.pct||5)} /></div>
+            <p style={{margin:"0 0 28px",fontSize:"14px",color:"rgba(255,255,255,0.7)"}}>{step?.label||"Working…"}</p>
+            {Object.entries(STEPS).filter(([k])=>k!=="error").map(([key,val])=>(
+              <div key={key} style={{display:"flex",alignItems:"center",gap:"10px",marginBottom:"8px",opacity:(step?.pct||0)>=val.pct?1:0.3}}>
+                <div style={{width:"18px",height:"18px",borderRadius:"50%",background:(step?.pct||0)>=val.pct?"linear-gradient(135deg,#7c3aed,#4f46e5)":"rgba(255,255,255,0.15)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:"10px",flexShrink:0}}>
+                  {(step?.pct||0)>val.pct?"✓":""}
+                </div>
+                <span style={{fontSize:"13px"}}>{val.label}</span>
               </div>
             ))}
+            {isError && (
+              <div style={{...S.error,marginTop:"20px"}}>
+                ❌ {error}
+                <button onClick={reset} style={{marginLeft:"12px",background:"none",border:"none",color:"#fca5a5",cursor:"pointer",textDecoration:"underline"}}>Try again</button>
+              </div>
+            )}
           </div>
         )}
+
+        {/* ── Done ── */}
+        {isDone && (
+          <div style={{...S.card,textAlign:"center"}}>
+            <div style={{fontSize:"56px",marginBottom:"16px"}}>🎉</div>
+            <h2 style={{margin:"0 0 6px",fontSize:"22px",fontWeight:700}}>Your file is ready!</h2>
+            <p style={{margin:"0 0 8px",fontSize:"14px",color:"rgba(255,255,255,0.5)"}}>
+              {jobData?.detected_language && `Detected: ${jobData.detected_language.toUpperCase()} → ${jobData.output_language || LANGUAGES[langCode]?.name}`}
+            </p>
+            {jobData?.english_text && (
+              <div style={S.transcript}>
+                <p style={{margin:"0 0 6px",fontSize:"11px",color:"rgba(255,255,255,0.4)",textTransform:"uppercase",letterSpacing:"0.05em"}}>English transcript</p>
+                <p style={{margin:0,fontSize:"13px",lineHeight:1.7,color:"rgba(255,255,255,0.8)"}}>{jobData.english_text}</p>
+              </div>
+            )}
+            <a href={downloadUrl} download style={{display:"inline-block",padding:"14px 32px",background:"linear-gradient(135deg,#7c3aed,#4f46e5)",borderRadius:"10px",color:"#fff",textDecoration:"none",fontSize:"16px",fontWeight:600,marginBottom:"16px"}}>
+              ⬇️ Download {jobData?.output_type === "audio" ? "Audio" : "Video"}
+            </a>
+            <br/>
+            <button onClick={reset} style={{background:"none",border:"none",color:"rgba(255,255,255,0.4)",cursor:"pointer",fontSize:"14px",textDecoration:"underline"}}>
+              Convert another file
+            </button>
+          </div>
+        )}
+
       </main>
     </div>
   );
