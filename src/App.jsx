@@ -66,12 +66,15 @@ export default function App() {
   }, []);
 
   const startPolling = (id) => {
+    let attempts = 0;
+    const MAX_ATTEMPTS = 200; // ~10 mins at 3s intervals
     pollRef.current = setInterval(async () => {
+      attempts++;
       try {
         const res  = await fetch(`${API_BASE}/status/${id}`);
         const data = await res.json();
         setJobData(data);
-        if (data.status === "done" || data.status === "error") {
+        if (data.status === "done" || data.status === "error" || attempts >= MAX_ATTEMPTS) {
           clearInterval(pollRef.current);
           if (data.status === "error") setError(data.error || "Processing failed");
         }
@@ -268,10 +271,28 @@ export default function App() {
               </div>
             ))}
             {isError && (
-              <div style={{...S.error,marginTop:"20px"}}>
-                ❌ {error}
-                <button onClick={reset} style={{marginLeft:"12px",background:"none",border:"none",color:"#fca5a5",cursor:"pointer",textDecoration:"underline"}}>Try again</button>
-              </div>
+              error === "tiktok_blocked" ? (
+                <div style={{marginTop:"24px",background:"rgba(251,191,36,0.1)",border:"1px solid rgba(251,191,36,0.3)",borderRadius:"12px",padding:"20px"}}>
+                  <p style={{margin:"0 0 12px",fontWeight:700,fontSize:"15px",color:"#fcd34d"}}>⚠️ TikTok blocked the download</p>
+                  <p style={{margin:"0 0 16px",fontSize:"13px",color:"rgba(255,255,255,0.7)",lineHeight:1.6}}>
+                    TikTok prevents servers from downloading videos directly. It's not a bug — it happens to everyone.<br/>
+                    The easy fix takes 10 seconds:
+                  </p>
+                  <div style={{background:"rgba(255,255,255,0.05)",borderRadius:"8px",padding:"14px",marginBottom:"16px",fontSize:"13px",lineHeight:2,color:"rgba(255,255,255,0.85)"}}>
+                    <div>📱 <strong>On TikTok:</strong> tap <strong>Share</strong> → <strong>Save Video</strong></div>
+                    <div>🖼️ Video saves to your <strong>Photos / Gallery</strong> (Recents at the top)</div>
+                    <div>⬆️ Come back here → tap <strong>Upload</strong> → select from Photos</div>
+                  </div>
+                  <button onClick={reset} style={{width:"100%",padding:"12px",background:"linear-gradient(135deg,#7c3aed,#4f46e5)",border:"none",borderRadius:"8px",color:"#fff",fontSize:"14px",fontWeight:600,cursor:"pointer"}}>
+                    ✅ Got it — take me to Upload
+                  </button>
+                </div>
+              ) : (
+                <div style={{...S.error,marginTop:"20px"}}>
+                  ❌ {error}
+                  <button onClick={reset} style={{marginLeft:"12px",background:"none",border:"none",color:"#fca5a5",cursor:"pointer",textDecoration:"underline"}}>Try again</button>
+                </div>
+              )
             )}
           </div>
         )}
