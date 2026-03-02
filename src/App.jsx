@@ -3,6 +3,7 @@ import { useState, useRef, useCallback } from "react";
 const API_BASE = import.meta.env.VITE_API_URL || "https://YOUR-HF-SPACE.hf.space";
 
 const STEPS = {
+  downloading_url:      { label: "Downloading from URL…",     pct: 10 },
   queued:               { label: "Queued",                    pct: 5  },
   extracting_audio:     { label: "Extracting audio…",         pct: 20 },
   transcribing:         { label: "Transcribing speech…",      pct: 40 },
@@ -36,6 +37,8 @@ export default function App() {
   const [jobData, setJobData]     = useState(null);
   const [error, setError]         = useState(null);
   const [uploading, setUploading] = useState(false);
+  const [urlInput, setUrlInput] = useState("");
+  const [urlLoading, setUrlLoading] = useState(false);
   const pollRef    = useRef(null);
   const fileInput  = useRef(null);
 
@@ -74,6 +77,23 @@ export default function App() {
         }
       } catch (e) { console.error(e); }
     }, 3000);
+  };
+
+  const handleUrlSubmit = async () => {
+    if (!urlInput.trim()) return;
+    setUrlLoading(true); setError(null);
+    try {
+      const res = await fetch(
+        `${API_BASE}/fetch-url?url=${encodeURIComponent(urlInput.trim())}&voice=${voice}&lang_code=${langCode}`,
+        { method: "POST" }
+      );
+      if (!res.ok) { const e = await res.json(); throw new Error(e.detail || "Failed"); }
+      const data = await res.json();
+      setJobId(data.job_id);
+      setJobData({ status: "downloading_url" });
+      setUrlLoading(false);
+      startPolling(data.job_id);
+    } catch (e) { setError(e.message); setUrlLoading(false); }
   };
 
   const handleSubmit = async () => {
@@ -133,6 +153,36 @@ export default function App() {
         {/* ── Upload form ── */}
         {!jobId && (
           <div style={S.card}>
+            {/* URL Input */}
+            <div style={{marginBottom:"20px"}}>
+              <label style={S.label}>🔗 Paste TikTok / Instagram / YouTube Shorts URL</label>
+              <div style={{display:"flex",gap:"8px"}}>
+                <input
+                  type="url"
+                  placeholder="https://www.tiktok.com/..."
+                  value={urlInput}
+                  onChange={e=>setUrlInput(e.target.value)}
+                  onKeyDown={e=>e.key==="Enter"&&handleUrlSubmit()}
+                  style={{flex:1,padding:"10px 14px",background:"rgba(255,255,255,0.1)",border:"1px solid rgba(255,255,255,0.2)",borderRadius:"8px",color:"#fff",fontSize:"14px",outline:"none"}}
+                />
+                <button
+                  onClick={handleUrlSubmit}
+                  disabled={!urlInput.trim()||urlLoading}
+                  style={{padding:"10px 20px",background:urlInput.trim()&&!urlLoading?"linear-gradient(135deg,#7c3aed,#4f46e5)":"rgba(255,255,255,0.1)",border:"none",borderRadius:"8px",color:"#fff",fontSize:"14px",fontWeight:600,cursor:urlInput.trim()&&!urlLoading?"pointer":"not-allowed",whiteSpace:"nowrap"}}>
+                  {urlLoading?"…":"Go →"}
+                </button>
+              </div>
+              <p style={{margin:"6px 0 0",fontSize:"11px",color:"rgba(255,255,255,0.35)"}}>
+                Works for public videos · TikTok may block server downloads — use upload below as fallback
+              </p>
+            </div>
+
+            <div style={{display:"flex",alignItems:"center",gap:"12px",marginBottom:"20px"}}>
+              <div style={{flex:1,height:"1px",background:"rgba(255,255,255,0.1)"}}/>
+              <span style={{fontSize:"12px",color:"rgba(255,255,255,0.35)"}}>or upload file directly</span>
+              <div style={{flex:1,height:"1px",background:"rgba(255,255,255,0.1)"}}/>
+            </div>
+
             {/* Drop zone */}
             <div style={S.drop(dragOver)}
               onDrop={onDrop}
